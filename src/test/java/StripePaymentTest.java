@@ -9,6 +9,7 @@ import java.nio.file.Paths;
 
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.*;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class StripePaymentTest {
 
@@ -18,7 +19,6 @@ public class StripePaymentTest {
     public static void setup() throws IOException {
         RestAssured.baseURI = WIREMOCK_URL;
 
-        // Автоматически загружаем все ваши 4 стаба в Docker WireMock перед стартом тестов
         uploadStub("stripe_success.json");
         uploadStub("stripe_declined.json");
         uploadStub("stripe_timeout.json");
@@ -26,27 +26,27 @@ public class StripePaymentTest {
     }
 
     private static void uploadStub(String fileName) throws IOException {
-        // Читаем JSON-файл из папки ресурсов проекта
         String stubJson = new String(Files.readAllBytes(
                 Paths.get("src/test/resources/mappings/" + fileName)));
 
-        // Отправляем стаб в админку WireMock
         given()
                 .contentType(ContentType.JSON)
                 .body(stubJson)
                 .when()
                 .post("/__admin/mappings")
                 .then()
-                .statusCode(201); // WireMock возвращает 201 Created при успешном создании маппинга
+                .statusCode(201);
     }
 
     @Test
-    public void test1_StripeSuccess() {
+    public void stripeSuccessTest() {
         given()
+                .log().all()
                 .contentType(ContentType.JSON)
                 .when()
                 .post("/v1/payment_intents")
                 .then()
+                .log().all()
                 .statusCode(200)
                 .body("id", equalTo("pi_mock_001"))
                 .body("status", equalTo("requires_capture"))
@@ -55,12 +55,14 @@ public class StripePaymentTest {
     }
 
     @Test
-    public void test2_StripeDeclined() {
+    public void stripeDeclinedTest() {
         given()
+                .log().all()
                 .contentType(ContentType.JSON)
                 .when()
                 .post("/v1/payment_intents/declined")
                 .then()
+                .log().all()
                 .statusCode(402)
                 .body("error.code", equalTo("card_declined"))
                 .body("error.decline_code", equalTo("insufficient_funds"))
@@ -68,14 +70,46 @@ public class StripePaymentTest {
     }
 
     @Test
-    public void test3_StripeServerError() {
+    public void stripeServerErrorTest() {
         given()
+                .log().all()
                 .contentType(ContentType.JSON)
                 .when()
                 .post("/v1/payment_intents/error")
                 .then()
+                .log().all()
                 .statusCode(503)
                 .body("error.type", equalTo("api_error"))
                 .body("error.message", equalTo("Service unavailable"));
     }
+
+    @Test
+    public void stripeTimeoutTest() {
+        io.restassured.config.RestAssuredConfig config = RestAssured.config()
+                .httpClient(io.restassured.config.HttpClientConfig.httpClientConfig()
+                        .setParam("http.socket.timeout", 12000)
+                        .setParam("http.connection.timeout", 12000));
+
+        long startTime = System.currentTimeMillis();
+
+        given()
+                .log().all()
+                .config(config)
+                .contentType(ContentType.JSON)
+                .when()
+                .post("/v1/payment_intents/timeout")
+                .then()
+                .log().all()
+                .statusCode(200)
+                .body("id", equalTo("pi_mock_timeout"))
+                .body("status", equalTo("requires_capture"));
+
+        long endTime = System.currentTimeMillis();
+        long durationSeconds = (endTime - startTime) / 1000;
+
+        assertTrue(durationSeconds >= 10,
+                "Response time is less than " + durationSeconds + " sec"
+        );
+    }
+
 }
